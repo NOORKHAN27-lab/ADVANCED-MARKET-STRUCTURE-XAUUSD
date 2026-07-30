@@ -83,18 +83,23 @@ one specific strategy sequence — not a generic indicator dump.
 **1. Live Market Data** — fetches real XAUUSD/BTCUSD candles automatically.
 
 **2. Upload Chart Image** — upload a screenshot of a chart (TradingView, your
-broker, anywhere) instead. You provide the candle colors, the price shown
-at the top/bottom edge of the image (read off the chart's own y-axis),
-and the timeframe. The tool detects each candle by color, splits its body
-from its wick, converts pixels to prices, and runs the exact same
+broker, anywhere) instead. You pick the candle colors (or use a preset);
+**the price axis is read automatically via OCR** on the chart's own
+y-axis labels, so there's no manual price entry needed (a manual override
+is available if OCR can't find enough labels). The tool detects each
+candle by color, splits its body from its wick, filters out non-candle
+UI elements (price badges/buttons that share the same color), converts
+pixels to prices using the OCR-detected axis, and runs the exact same
 BOS/CHOCH → sweep → zone → fib → A/A+ pipeline on the reconstructed data.
 A preview of the reconstructed candles is shown so you can sanity-check
 the extraction. Session-time filtering is disabled in this mode since a
 screenshot has no real timestamps.
 
-**Image mode limitations:** works best on a clean, cropped candlestick
-screenshot with a plain background and no overlapping indicators/text on
-top of the candles, with plenty of visible candles.
+**Image mode limitations:** works best when the chart's y-axis price
+labels are visible and legible, with plenty of visible candles. A very
+tight crop with no visible axis, or a very small/blurry screenshot, may
+not have enough for OCR to calibrate — use the manual override in that
+case.
 
 ## Run locally
 

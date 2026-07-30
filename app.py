@@ -410,12 +410,15 @@ with st.sidebar:
         else:
             bull_color, bear_color = COLOR_PRESETS[preset_label]
 
-        st.caption("Read these two values off your chart's own y-axis:")
-        p1, p2 = st.columns(2)
-        with p1:
-            top_price = st.number_input("Price at TOP of image", min_value=0.0, value=2050.0, step=0.5)
-        with p2:
-            bottom_price = st.number_input("Price at BOTTOM of image", min_value=0.0, value=1950.0, step=0.5)
+        st.caption("Price axis is read automatically from your chart — no need to type it in.")
+        with st.expander("Manual price override (only if auto-detect fails)"):
+            use_manual_calibration = st.checkbox("Enter prices manually instead", value=False)
+            if use_manual_calibration:
+                p1, p2 = st.columns(2)
+                with p1:
+                    top_price = st.number_input("Price at TOP of image", min_value=0.0, value=2050.0, step=0.5)
+                with p2:
+                    bottom_price = st.number_input("Price at BOTTOM of image", min_value=0.0, value=1950.0, step=0.5)
 
         htf_label = ltf_label = chart_tf_label
     else:
@@ -526,7 +529,10 @@ if run:
             )
 
         for w in extraction.warnings:
-            st.warning(w)
+            if w.startswith("Auto-detected"):
+                st.info(w)
+            else:
+                st.warning(w)
 
         if extraction.candle_count == 0:
             st.error("No candles could be detected in this image. Try adjusting the "
