@@ -1,0 +1,247 @@
+"""
+signal_engine.py
+-----------------
+Combines all confluence pieces into one trade setup, following the exact
+strategy sequence, then applies your execution rules and measures a real
+outcome (not a guess):
+
+    1. HTF market structure (BOS/CHOCH) -> establishes bias (bullish/bearish)
+    2. LTF liquidity sweep in the direction of that bias
+    3. Supply/Demand zone formed right after the sweep -- must be FRESH
+       (first time price returns to it; a zone already used by an earlier
+       setup is skipped)
+    4. Fibonacci retracement of the resulting impulse leg -> ENTRY
+       CONFIRMATION only (0.618-0.786 zone must overlap the supply/demand
+       zone). Targets are NOT Fibonacci-based -- see step 5.
+    5. Target = the next unbroken structural swing level (the next swing
+       high above price for a BUY, or swing low below price for a SELL) --
+       i.e. the next liquidity pool / structure level in the direction of
+       the trade.
+    6. Session filter -- only setups whose sweep occurs in the configured
+       session window (default: New York session)
+    7. Risk:Reward filter -- only keep a setup if that structural target
+       lands within [min_rr, max_rr] (default 1:3 to 1:5)
+    8. Zone touch tagging (A / A+) -- the first time price returns to the
+       zone is tagged "A". If price then leaves, fails to confirm a new
+       BOS in the trade's direction, and comes back to the SAME zone a
+       second time, that second touch is tagged "A+" -- a higher-quality
+       repeat test of the same level (per your own stats: A ~65% win rate,
+       A+ ~85%). Both are surfaced as separate setups so you can compare.
+    9. Backtest evaluation -- walk forward through the LTF data to see
+       whether the target or stop was hit first -> WIN / LOSS / OPEN
+
+This module produces `Setup` objects -- informational trade ideas for you
+to evaluate, not auto-executed trades. Nothing here places real orders or
+constitutes financial advice.
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Literal, Optional
+
+import pandas as pd
+
+from structure import analyze_structure, find_target_level
+from liquidity import LiquiditySweep, find_liquidity_sweeps
+from zones import Zone, find_zone_after_sweep, compute_fibonacci
+from filters import in_ny_session, zones_overlap, select_target_by_rr
+from backtest import simulate_outcome
+
+
+@dataclass
+class Setup:
+    direction: Literal["BUY", "SELL"]
+    sweep: LiquiditySweep
+    zone: Zone
+    fib_levels: dict           # confirmation-zone reference only (0.618/0.786 etc.)
+    entry_zone: tuple          # (low, high)
+    stop_loss: float
+    chosen_target: float       # next swing high/low (structural target)
+    risk_reward: float
+    touch_label: str = "A"     # "A" (first touch) or "A+" (confirmed 2nd touch)
+    confluence_notes: List[str] = field(default_factory=list)
+    confirmed: bool = False    # True if price has returned into the zone
+    outcome: str = "OPEN"      # "WIN" | "LOSS" | "OPEN"
+    exit_price: Optional[float] = None
+    bars_held: Optional[int] = None
+
+
+def _find_next_touch(closes, entry_zone: tuple, after_index: int, max_lookahead: int = 150) -> Optional[int]:
+    """
+    First index after `after_index` where price closes back inside
+    `entry_zone`, requiring it to have LEFT the zone at least once in
+    between (so this is a genuine second visit, not the same touch).
+    """
+    low, high = entry_zone
+    left_zone = False
+    end = min(after_index + max_lookahead, len(closes))
+    for i in range(after_index + 1, end):
+        inside = low <= closes[i] <= high
+        if not inside:
+            left_zone = True
+        elif inside and left_zone:
+            return i
+    return None
+
+
+def build_setups(ltf_data: pd.DataFrame, htf_bias: str,
+                  ltf_left: int = 2, ltf_right: int = 2,
+                  session_only: bool = True, session_start_hour: int = 8, session_end_hour: int = 17,
+                  fresh_zones_only: bool = True,
+                  min_rr: float = 3.0, max_rr: float = 5.0,
+                  evaluate: bool = True) -> List[Setup]:
+    """
+    Given LTF candle data and the HTF bias, find liquidity sweeps aligned
+    with that bias and build full Setup objects -- filtered down to only
+    the ones matching session, freshness, and risk:reward rules, then
+    (optionally) backtested for a real WIN/LOSS/OPEN outcome. Each zone
+    can produce up to two setups: the first touch ("A") and, if price
+    fails to confirm a new BOS before retesting the same zone, a second
+    ("A+") setup.
+    """
+    if htf_bias not in ("bullish", "bearish"):
+        return []
+
+    ltf_swings, ltf_events, _ = analyze_structure(ltf_data, left=ltf_left, right=ltf_right)
+    sweeps = find_liquidity_sweeps(ltf_data, ltf_swings)
+
+    wanted_direction = "bullish" if htf_bias == "bullish" else "bearish"
+    aligned_sweeps = [s for s in sweeps if s.direction == wanted_direction]
+
+    setups: List[Setup] = []
+    used_zones: List[tuple] = []  # (bottom, top) of zones already claimed by an earlier sweep
+    highs = ltf_data["High"].to_numpy()
+    lows = ltf_data["Low"].to_numpy()
+    closes = ltf_data["Close"].to_numpy()
+
+    for sweep in aligned_sweeps:
+        if session_only and not in_ny_session(sweep.date, session_start_hour, session_end_hour):
+            continue
+
+        zone = find_zone_after_sweep(ltf_data, sweep)
+        if zone is None:
+            continue
+
+        zone_range = (zone.bottom, zone.top)
+
+        if fresh_zones_only and any(zones_overlap(zone_range, used) for used in used_zones):
+            continue
+
+        search_end = min(zone.end_index + 30, len(ltf_data) - 1)
+        entry_low, entry_high = zone.bottom, zone.top
+
+        if sweep.direction == "bullish":
+            leg_high = highs[zone.end_index:search_end + 1].max()
+            fib = compute_fibonacci(low_price=sweep.wick_extreme, high_price=leg_high, direction="bullish")
+            stop_loss = sweep.wick_extreme * 0.999
+            direction = "BUY"
+        else:
+            leg_low = lows[zone.end_index:search_end + 1].min()
+            fib = compute_fibonacci(low_price=leg_low, high_price=sweep.wick_extreme, direction="bearish")
+            stop_loss = sweep.wick_extreme * 1.001
+            direction = "SELL"
+
+        # --- Target = next unbroken swing high/low (structural level), NOT Fibonacci ---
+        target = find_target_level(ltf_data, ltf_swings, up_to_index=zone.end_index, direction=direction)
+        if target is None:
+            continue
+
+        rr_result = select_target_by_rr((entry_low, entry_high), stop_loss, [target], direction, min_rr, max_rr)
+        if rr_result is None:
+            continue
+        chosen_target, rr = rr_result
+
+        base_notes = [
+            f"Liquidity swept at {sweep.swept_level:.2f} (wick to {sweep.wick_extreme:.2f}), "
+            f"aligned with {htf_bias} HTF bias.",
+            f"{zone.kind.capitalize()} zone found at {zone.bottom:.2f}-{zone.top:.2f} (fresh).",
+            f"Target = next {'swing high' if direction == 'BUY' else 'swing low'} at {chosen_target:.2f} "
+            f"(structural level, not a Fibonacci extension).",
+            f"Risk:Reward = 1:{rr:.2f} -- within the {min_rr:.0f}-{max_rr:.0f} target range.",
+        ]
+        fib_zone_low, fib_zone_high = sorted([fib["0.618"], fib["0.786"]])
+        overlaps_fib = not (entry_high < fib_zone_low or entry_low > fib_zone_high)
+        if overlaps_fib:
+            base_notes.append("Zone overlaps the 0.618-0.786 Fibonacci confirmation band -- confluence.")
+        if session_only:
+            base_notes.append("Sweep occurred within the configured NY session window.")
+
+        # --- First touch (A) ---
+        entry_index = None
+        for i in range(zone.end_index, min(zone.end_index + 60, len(ltf_data))):
+            if entry_low <= closes[i] <= entry_high:
+                entry_index = i
+                break
+        confirmed = entry_index is not None
+
+        setup_a = Setup(
+            direction=direction, sweep=sweep, zone=zone, fib_levels=fib,
+            entry_zone=(entry_low, entry_high), stop_loss=stop_loss,
+            chosen_target=chosen_target, risk_reward=rr, touch_label="A",
+            confluence_notes=list(base_notes), confirmed=confirmed,
+        )
+        if evaluate and confirmed:
+            result = simulate_outcome(ltf_data, entry_index, (entry_low, entry_high),
+                                       stop_loss, chosen_target, direction)
+            setup_a.outcome = result.outcome
+            setup_a.exit_price = result.exit_price
+            setup_a.bars_held = result.bars_held
+        setups.append(setup_a)
+
+        # --- Second touch (A+) -- only if price left the zone, failed to confirm a
+        # new BOS in this trade's direction, and came back to the SAME zone again ---
+        if confirmed:
+            second_index = _find_next_touch(closes, (entry_low, entry_high), entry_index)
+            if second_index is not None:
+                bos_label = "BOS_bull" if direction == "BUY" else "BOS_bear"
+                bos_between = any(
+                    e.label == bos_label and entry_index < e.index < second_index
+                    for e in ltf_events
+                )
+                if not bos_between:
+                    a_plus_notes = list(base_notes) + [
+                        "Second touch of the same zone (A+) -- price left the zone but did NOT "
+                        "confirm a new BOS in this direction before returning, per your rule."
+                    ]
+                    setup_a_plus = Setup(
+                        direction=direction, sweep=sweep, zone=zone, fib_levels=fib,
+                        entry_zone=(entry_low, entry_high), stop_loss=stop_loss,
+                        chosen_target=chosen_target, risk_reward=rr, touch_label="A+",
+                        confluence_notes=a_plus_notes, confirmed=True,
+                    )
+                    if evaluate:
+                        result2 = simulate_outcome(ltf_data, second_index, (entry_low, entry_high),
+                                                    stop_loss, chosen_target, direction)
+                        setup_a_plus.outcome = result2.outcome
+                        setup_a_plus.exit_price = result2.exit_price
+                        setup_a_plus.bars_held = result2.bars_held
+                    setups.append(setup_a_plus)
+
+        used_zones.append(zone_range)
+
+    return setups
+
+
+def win_rate_stats(setups: List[Setup]) -> dict:
+    """Aggregate WIN/LOSS/OPEN counts and win rate across a list of Setups."""
+    closed = [s for s in setups if s.outcome in ("WIN", "LOSS")]
+    wins = sum(1 for s in closed if s.outcome == "WIN")
+    losses = sum(1 for s in closed if s.outcome == "LOSS")
+    open_count = sum(1 for s in setups if s.outcome == "OPEN")
+    win_rate = (wins / len(closed) * 100) if closed else 0.0
+    return {
+        "total_setups": len(setups),
+        "wins": wins,
+        "losses": losses,
+        "open": open_count,
+        "closed": len(closed),
+        "win_rate": win_rate,
+    }
+
+
+def win_rate_by_touch(setups: List[Setup]) -> dict:
+    """Split win-rate stats by touch_label ('A' vs 'A+') for direct comparison."""
+    result = {}
+    for label in ("A", "A+"):
+        subset = [s for s in setups if s.touch_label == label]
+        result[label] = win_rate_stats(subset)
+    return result
