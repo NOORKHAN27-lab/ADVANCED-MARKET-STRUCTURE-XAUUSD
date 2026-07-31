@@ -27,6 +27,7 @@ Algorithm
 from dataclasses import dataclass
 from typing import List, Literal, Optional
 
+import numpy as np
 import pandas as pd
 
 Bias = Literal["bullish", "bearish", "neutral"]
@@ -181,6 +182,36 @@ def find_target_level(data: pd.DataFrame, swings: List[SwingPoint],
     if direction == "BUY":
         return watched_high.price if watched_high is not None else None
     return watched_low.price if watched_low is not None else None
+
+
+def find_target_candidates(data: pd.DataFrame, swings: List[SwingPoint],
+                            up_to_index: int, direction: str) -> List[float]:
+    """
+    Returns ALL still-unbroken swing levels ahead of the current price in
+    the given direction, sorted nearest-first: every swing high above
+    current price (for "BUY") or swing low below current price (for
+    "SELL") that no candle has closed beyond yet. This lets the caller
+    pick whichever level gives a Risk:Reward in their desired range,
+    rather than being stuck with only the single nearest level.
+    """
+    if up_to_index >= len(data):
+        return []
+    current_price = float(data["Close"].iloc[up_to_index])
+    closes = data["Close"].to_numpy()
+
+    candidates = []
+    for sw in swings:
+        if sw.index > up_to_index:
+            continue
+        if direction == "BUY" and sw.kind == "high" and sw.price > current_price:
+            if not np.any(closes[sw.index:up_to_index + 1] > sw.price):
+                candidates.append(sw.price)
+        elif direction == "SELL" and sw.kind == "low" and sw.price < current_price:
+            if not np.any(closes[sw.index:up_to_index + 1] < sw.price):
+                candidates.append(sw.price)
+
+    candidates = sorted(set(candidates), reverse=(direction == "SELL"))
+    return candidates
 
 
 def analyze_structure(data: pd.DataFrame, left: int = 2, right: int = 2):

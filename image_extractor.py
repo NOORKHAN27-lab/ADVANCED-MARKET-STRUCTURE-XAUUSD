@@ -235,11 +235,36 @@ def extract_candles(
     widths_arr = np.array([e - s + 1 for s, e in blobs])
     median_width = float(np.median(widths_arr))
     width_cap = max(6.0, median_width * 8)
-    kept_blobs = [(s, e) for (s, e), w in zip(blobs, widths_arr) if w <= width_cap]
-    if len(kept_blobs) < len(blobs):
+
+    # Also reject sparse/low-density blobs -- a real candle (body+wick) is
+    # a solidly-filled shape, while gridlines, dotted reference lines, or
+    # anti-aliased UI edges that happen to match the color tolerance tend
+    # to be sparse/broken within their own bounding box.
+    kept_blobs = []
+    dropped_sparse = 0
+    for (s, e), w in zip(blobs, widths_arr):
+        if w > width_cap:
+            continue
+        sub = combined_mask[:, s:e + 1]
+        rows_with_color = np.where(sub.any(axis=1))[0]
+        if len(rows_with_color) == 0:
+            continue
+        bbox_h = rows_with_color.max() - rows_with_color.min() + 1
+        density = sub.sum() / (w * bbox_h)
+        if density < 0.15:
+            dropped_sparse += 1
+            continue
+        kept_blobs.append((s, e))
+
+    if len(blobs) - len(kept_blobs) - dropped_sparse > 0:
         warnings.append(
-            f"Ignored {len(blobs) - len(kept_blobs)} oversized colored region(s) "
+            f"Ignored {len(blobs) - len(kept_blobs) - dropped_sparse} oversized colored region(s) "
             "(likely a price badge/button, not a candle)."
+        )
+    if dropped_sparse > 0:
+        warnings.append(
+            f"Ignored {dropped_sparse} sparse/low-density region(s) "
+            "(likely a gridline or UI artifact, not a real candle)."
         )
     blobs = kept_blobs
 

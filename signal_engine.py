@@ -40,7 +40,7 @@ from typing import List, Literal, Optional
 
 import pandas as pd
 
-from structure import analyze_structure, find_target_level
+from structure import analyze_structure, find_target_level, find_target_candidates
 from liquidity import LiquiditySweep, find_liquidity_sweeps
 from zones import Zone, find_zone_after_sweep, compute_fibonacci
 from filters import in_ny_session, zones_overlap, select_target_by_rr
@@ -141,11 +141,14 @@ def build_setups(ltf_data: pd.DataFrame, htf_bias: str,
             direction = "SELL"
 
         # --- Target = next unbroken swing high/low (structural level), NOT Fibonacci ---
-        target = find_target_level(ltf_data, ltf_swings, up_to_index=zone.end_index, direction=direction)
-        if target is None:
+        # Consider ALL still-unbroken levels ahead (nearest first), not just the very
+        # next one -- so a level further out can be used if it's the one that actually
+        # fits the desired Risk:Reward band.
+        target_candidates = find_target_candidates(ltf_data, ltf_swings, up_to_index=zone.end_index, direction=direction)
+        if not target_candidates:
             continue
 
-        rr_result = select_target_by_rr((entry_low, entry_high), stop_loss, [target], direction, min_rr, max_rr)
+        rr_result = select_target_by_rr((entry_low, entry_high), stop_loss, target_candidates, direction, min_rr, max_rr)
         if rr_result is None:
             continue
         chosen_target, rr = rr_result

@@ -35,10 +35,10 @@ one specific strategy sequence — not a generic indicator dump.
    0.618–0.786 band is checked for overlap with the supply/demand zone
    (confluence). **Targets are not Fibonacci-based** — see the next point.
 
-5. **Target = next structural swing level** — the target is the next
-   unbroken swing high (for a BUY) or swing low (for a SELL): the next
-   liquidity pool / structure level price is likely heading toward, using
-   the same swing-detection logic as the BOS/CHOCH engine.
+5. **Target = next structural swing level** — the target is chosen from
+   ALL still-unbroken swing highs (for a BUY) or swing lows (for a SELL)
+   ahead of price — not just the single nearest one — picking whichever
+   level actually produces a Risk:Reward inside your configured range.
 
 6. **Execution filters** — only setups meeting all of these are kept:
    - **Session** — the sweep must occur within the configured NY session

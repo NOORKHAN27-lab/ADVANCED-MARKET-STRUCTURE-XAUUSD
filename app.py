@@ -29,6 +29,7 @@ from zoneinfo import ZoneInfo
 from data_feed import get_xauusd, get_btcusd
 from structure import analyze_structure
 from signal_engine import build_setups, win_rate_stats, win_rate_by_touch
+from liquidity import find_liquidity_sweeps
 from chart import plot_htf_structure, plot_ltf_setup, plot_winrate_gauge, plot_candles, style_axis
 from image_extractor import extract_candles, COLOR_PRESETS
 
@@ -330,6 +331,17 @@ st.markdown("""
 .touch-card.plus .touch-wr { color: var(--amber); }
 .touch-detail { font-family: 'Fira Code', monospace; font-size: 11px; color: var(--muted); }
 
+.diag-panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px 16px; margin: 10px 0;
+}
+.diag-row {
+    display: flex; justify-content: space-between;
+    font-family: 'Fira Code', monospace; font-size: 12.5px; padding: 4px 0;
+    color: var(--muted);
+}
+.diag-row b { color: var(--text); }
+
 .stSelectbox div[data-baseweb="select"] > div, .stNumberInput input {
     background: var(--surface2) !important; color: var(--text) !important;
     border: 1px solid var(--border) !important; border-radius: 7px !important;
@@ -540,6 +552,10 @@ if run:
             st.stop()
 
         st.success(f"Extracted {extraction.candle_count} candles from the image.")
+        if extraction.candle_count < 150:
+            st.info(f"Only {extraction.candle_count} candles — this strategy needs a fair amount of price "
+                    "history to find a qualifying setup (multiple swings + a liquidity sweep + a fresh zone). "
+                    "A wider screenshot with more visible candles will give it more to work with.")
         htf_data = ltf_data = extraction.data
 
         with st.spinner("Analyzing market structure..."):
@@ -580,6 +596,13 @@ if run:
                 fresh_zones_only=fresh_only, min_rr=min_rr, max_rr=max_rr,
             )
             stats = win_rate_stats(setups)
+
+    # --- Shared diagnostics (both modes): how much raw material did we
+    # actually have to work with, regardless of how selective the final
+    # filters were? This is what explains a 0-setup result honestly. ---
+    diag_swings, _, _ = analyze_structure(ltf_data, left=FRACTAL_STRENGTH, right=FRACTAL_STRENGTH)
+    diag_sweeps = find_liquidity_sweeps(ltf_data, diag_swings)
+    diag_aligned = [s for s in diag_sweeps if s.direction == bias]
 
     st.markdown(f"""
     <div class="bias-card {bias}">
@@ -652,8 +675,22 @@ if run:
             st.pyplot(fig2)
             st.caption(f"Showing the most recent aligned setup. {len(setups)} total setup(s) found in this window.")
         else:
-            st.info(f"No liquidity sweep + zone setup aligned with the {bias} bias was found in this LTF window. "
-                    "Try a longer LTF history.")
+            st.info(f"No liquidity sweep + zone setup aligned with the {bias} bias was found in this LTF window.")
+            st.markdown(f"""
+            <div class="diag-panel">
+                <div class="diag-row"><span>Candles analyzed</span><b>{len(ltf_data)}</b></div>
+                <div class="diag-row"><span>Total liquidity sweeps found (any direction)</span><b>{len(diag_sweeps)}</b></div>
+                <div class="diag-row"><span>Sweeps aligned with {bias} bias</span><b>{len(diag_aligned)}</b></div>
+            </div>
+            """, unsafe_allow_html=True)
+            if len(diag_sweeps) == 0:
+                st.warning("No liquidity sweeps at all were found — this data window is too short/quiet for this "
+                           "strategy. Use more candles (longer LTF history, or a wider chart screenshot with more "
+                           "visible candles).")
+            elif len(diag_aligned) == 0:
+                st.warning(f"There were {len(diag_sweeps)} sweep(s), but none matched the current {bias} bias "
+                           "direction — the market hasn't yet swept liquidity in the direction your bias calls for. "
+                           "This can be a genuinely correct 'no trade right now' read, or resolve with more data.")
 
     with tab_setups:
         if not setups:
