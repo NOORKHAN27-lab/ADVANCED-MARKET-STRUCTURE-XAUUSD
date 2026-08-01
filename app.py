@@ -342,6 +342,50 @@ st.markdown("""
 }
 .diag-row b { color: var(--text); }
 
+/* ---------- Prominent trade signal card ---------- */
+.trade-signal {
+    border-radius: 14px; padding: 22px 26px; margin-bottom: 22px;
+    background: linear-gradient(160deg, rgba(27,24,48,0.9), rgba(20,18,31,0.95));
+    box-shadow: 0 8px 28px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.03);
+    border: 1.5px solid var(--border);
+}
+.trade-signal.signal-buy { border-color: rgba(63,208,140,0.5); }
+.trade-signal.signal-sell { border-color: rgba(224,87,107,0.5); }
+.trade-signal.signal-none { border-color: var(--border); }
+
+.ts-header { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+.ts-direction {
+    font-family: 'Sora', sans-serif; font-weight: 700; font-size: 24px; letter-spacing: 0.02em;
+}
+.signal-buy .ts-direction { color: var(--green); text-shadow: 0 0 16px rgba(63,208,140,0.4); }
+.signal-sell .ts-direction { color: var(--red); text-shadow: 0 0 16px rgba(224,87,107,0.4); }
+.signal-none .ts-direction { color: var(--muted); font-size: 18px; }
+.ts-outcome {
+    margin-left: auto; font-family: 'Fira Code', monospace; font-size: 12px;
+    color: var(--muted); border: 1px solid var(--border); border-radius: 5px; padding: 3px 10px;
+}
+
+.ts-levels { display: flex; gap: 14px; margin-bottom: 20px; flex-wrap: wrap; }
+.ts-level {
+    flex: 1; min-width: 150px; text-align: center;
+    background: var(--surface2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 10px;
+}
+.ts-lbl { font-family: 'Fira Code', monospace; font-size: 11px; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 6px; }
+.ts-val { font-family: 'Fira Code', monospace; font-weight: 500; font-size: 26px; }
+.ts-val.entry { color: var(--violet); }
+.ts-val.sl { color: var(--red); }
+.ts-val.tp { color: var(--green); }
+.ts-sub { font-family: 'Fira Code', monospace; font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+.ts-reason { border-top: 1px solid var(--border); padding-top: 14px; }
+.ts-reason-title {
+    font-family: 'Fira Code', monospace; font-size: 11px; letter-spacing: 0.08em;
+    color: var(--amber); margin-bottom: 8px;
+}
+.ts-reason ul { margin: 0; padding-left: 20px; }
+.ts-reason li { font-size: 13.5px; color: var(--text); margin-bottom: 5px; line-height: 1.5; }
+
 .stSelectbox div[data-baseweb="select"] > div, .stNumberInput input {
     background: var(--surface2) !important; color: var(--text) !important;
     border: 1px solid var(--border) !important; border-radius: 7px !important;
@@ -586,7 +630,7 @@ if run:
                 ltf_data = get_xauusd(interval=ltf_label, lookback_days=ltf_lookback)
             else:
                 htf_data = get_btcusd(interval=htf_label, limit=500)
-                ltf_data = get_btcusd(interval=ltf_label, limit=1000)
+                ltf_data = get_btcusd(interval=ltf_label, limit=5000)
 
             htf_swings, htf_events, bias = analyze_structure(
                 htf_data, left=FRACTAL_STRENGTH, right=FRACTAL_STRENGTH)
@@ -613,6 +657,59 @@ if run:
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+    # ---------------------------------------------------------------------
+    # PROMINENT TRADE SIGNAL — the actual answer: direction, entry, SL, TP,
+    # and why. Shown immediately, no digging through tabs required.
+    # ---------------------------------------------------------------------
+    if setups:
+        latest = setups[-1]
+        dir_class = "signal-buy" if latest.direction == "BUY" else "signal-sell"
+        entry_mid = (latest.entry_zone[0] + latest.entry_zone[1]) / 2
+        reason_html = "".join(f"<li>{n}</li>" for n in latest.confluence_notes)
+
+        st.markdown(f"""
+        <div class="trade-signal {dir_class}">
+            <div class="ts-header">
+                <span class="ts-direction">{latest.direction}</span>
+                <span class="touch-badge {'touch-plus' if latest.touch_label == 'A+' else 'touch-a'}">{latest.touch_label}</span>
+                <span class="ts-outcome">{latest.outcome}</span>
+            </div>
+            <div class="ts-levels">
+                <div class="ts-level"><div class="ts-lbl">ENTRY</div><div class="ts-val entry">{entry_mid:.2f}</div>
+                    <div class="ts-sub">{latest.entry_zone[0]:.2f} – {latest.entry_zone[1]:.2f}</div></div>
+                <div class="ts-level"><div class="ts-lbl">STOP LOSS (SL)</div><div class="ts-val sl">{latest.stop_loss:.2f}</div></div>
+                <div class="ts-level"><div class="ts-lbl">TAKE PROFIT (TP)</div><div class="ts-val tp">{latest.chosen_target:.2f}</div>
+                    <div class="ts-sub">R:R = 1:{latest.risk_reward:.2f}</div></div>
+            </div>
+            <div class="ts-reason">
+                <div class="ts-reason-title">REASON FOR TRADE</div>
+                <ul>{reason_html}</ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if len(setups) > 1:
+            st.caption(f"Showing the most recent setup. {len(setups)} total found — see \"Setup Details\" tab below for all of them.")
+    else:
+        if len(diag_sweeps) < 5:
+            no_trade_reason = "Try widening the data (more history / a wider chart screenshot)."
+        else:
+            no_trade_reason = ("The market simply hasn't set up a qualifying trade in this window yet "
+                                "— this can be a genuinely correct \"no trade\" read.")
+        st.markdown(f"""
+        <div class="trade-signal signal-none">
+            <div class="ts-header"><span class="ts-direction">NO TRADE SIGNAL RIGHT NOW</span></div>
+            <div class="ts-reason">
+                <div class="ts-reason-title">WHY</div>
+                <ul>
+                    <li>{len(diag_sweeps)} liquidity sweep(s) found in this data, {len(diag_aligned)} aligned with the {bias} bias.</li>
+                    <li>A valid setup needs: an aligned sweep, then a fresh zone, then Fibonacci confirmation, then a target with the right Risk:Reward — all at once.</li>
+                    <li>{no_trade_reason}</li>
+                </ul>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     gauge_col, stats_col = st.columns([1, 2.4])
     with gauge_col:

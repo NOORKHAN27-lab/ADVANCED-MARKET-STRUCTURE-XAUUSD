@@ -67,30 +67,60 @@ def get_xauusd(interval: str = "1h", lookback_days: int = 60) -> pd.DataFrame:
 
 
 def get_btcusd(interval: str = "1h", limit: int = 500) -> pd.DataFrame:
-    """Fetch BTCUSDT candles via the Binance public klines endpoint."""
-    if REQUESTS_AVAILABLE:
-        try:
-            binance_interval = BINANCE_INTERVAL_MAP.get(interval, "1h")
-            resp = requests.get(
-                BINANCE_KLINES_URL,
-                params={"symbol": "BTCUSDT", "interval": binance_interval, "limit": limit},
-                timeout=10,
-            )
+    """
+    Fetch BTCUSDT candles via the Binance public klines endpoint.
+    `limit` can exceed Binance's single-request cap of 1000 -- this
+    paginates backward with multiple requests to build up a much longer
+    history (e.g. months of 15m data), so old liquidity levels are still
+    present for sweep detection, not just the last ~10 days.
+    """
+    if not REQUESTS_AVAILABLE:
+        return get_synthetic_candles(interval=interval, seed=99, start_price=65000.0)
+
+    binance_interval = BINANCE_INTERVAL_MAP.get(interval, "1h")
+    per_request = 1000
+    all_frames = []
+    end_time = None  # ms epoch; None = most recent
+
+    try:
+        remaining = limit
+        while remaining > 0:
+            batch_size = min(per_request, remaining)
+            params = {"symbol": "BTCUSDT", "interval": binance_interval, "limit": batch_size}
+            if end_time is not None:
+                params["endTime"] = end_time
+
+            resp = requests.get(BINANCE_KLINES_URL, params=params, timeout=10)
             resp.raise_for_status()
             raw = resp.json()
-            if raw:
-                df = pd.DataFrame(raw, columns=[
-                    "open_time", "Open", "High", "Low", "Close", "Volume",
-                    "close_time", "quote_vol", "trades", "taker_base", "taker_quote", "ignore",
-                ])
-                df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
-                df = df.set_index("open_time")
-                for col in ["Open", "High", "Low", "Close", "Volume"]:
-                    df[col] = df[col].astype(float)
-                return df[["Open", "High", "Low", "Close", "Volume"]]
-        except Exception:
-            pass
-    return get_synthetic_candles(interval=interval, seed=99, start_price=65000.0)
+            if not raw:
+                break
+
+            df = pd.DataFrame(raw, columns=[
+                "open_time", "Open", "High", "Low", "Close", "Volume",
+                "close_time", "quote_vol", "trades", "taker_base", "taker_quote", "ignore",
+            ])
+            all_frames.append(df)
+
+            if len(raw) < batch_size:
+                break  # reached the beginning of available history
+
+            end_time = int(raw[0][0]) - 1  # next batch ends just before this batch's first candle
+            remaining -= batch_size
+
+        if not all_frames:
+            return get_synthetic_candles(interval=interval, seed=99, start_price=65000.0)
+
+        combined = pd.concat(all_frames, ignore_index=True)
+        combined["open_time"] = pd.to_datetime(combined["open_time"], unit="ms")
+        combined = combined.drop_duplicates(subset="open_time").sort_values("open_time")
+        combined = combined.set_index("open_time")
+        for col in ["Open", "High", "Low", "Close", "Volume"]:
+            combined[col] = combined[col].astype(float)
+        return combined[["Open", "High", "Low", "Close", "Volume"]]
+
+    except Exception:
+        return get_synthetic_candles(interval=interval, seed=99, start_price=65000.0)
 
 
 def _resample(data: pd.DataFrame, rule: str) -> pd.DataFrame:

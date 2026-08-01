@@ -41,8 +41,11 @@ one specific strategy sequence — not a generic indicator dump.
    level actually produces a Risk:Reward inside your configured range.
 
 6. **Execution filters** — only setups meeting all of these are kept:
-   - **Session** — the sweep must occur within the configured NY session
-     window (default 08:00–17:00 America/New_York, DST-aware).
+   - **Session** — the **sweep event itself** must occur within the
+     configured NY session window (default 08:00–17:00 America/New_York,
+     DST-aware). The level being swept can be any age — a swing from
+     months ago counts just as much as one from yesterday; only the
+     timing of the sweep candle matters, never the age of the level.
    - **Fresh zone** — the supply/demand zone must not already have been
      used by an earlier setup (no re-testing an already-tapped zone).
    - **Risk:Reward** — a target must land within your configured
@@ -121,6 +124,19 @@ and swing sensitivity, then **Run Analysis**. You'll get:
 1. Push this repo to GitHub (public).
 2. Go to [share.streamlit.io](https://share.streamlit.io), sign in with GitHub.
 3. **Create app** → select this repo → branch `main` → main file `app.py` → **Deploy**.
+
+## Data history limits (so old levels can actually be found)
+
+Since the strategy can sweep a level of any age, the LTF data needs enough
+history behind it for old swings to even be present:
+
+- **BTCUSD (Binance)** — paginated automatically to pull thousands of
+  candles (e.g. ~52 days of 15m, ~7 months of 1h) in a few API calls.
+- **XAUUSD (yfinance)** — capped by Yahoo Finance itself, not by this
+  tool: 1m ≈ 7 days, 5m/15m/30m ≈ 60 days, 1h ≈ 2 years. There's no way
+  around this for Gold at fine granularities — it's a data-provider
+  limit. If you need months-old Gold levels at LTF precision, that's a
+  genuine constraint of the free data source.
 
 ## Notes & limitations
 
