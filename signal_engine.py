@@ -88,6 +88,9 @@ def build_setups(ltf_data: pd.DataFrame, htf_bias: str,
                   session_only: bool = True, session_start_hour: int = 8, session_end_hour: int = 17,
                   fresh_zones_only: bool = True,
                   min_rr: float = 3.0, max_rr: float = 5.0,
+                  require_fib_confluence: bool = False,
+                  htf_zones: Optional[List[tuple]] = None,
+                  require_htf_confluence: bool = False,
                   evaluate: bool = True) -> List[Setup]:
     """
     Given LTF candle data and the HTF bias, find liquidity sweeps aligned
@@ -97,6 +100,13 @@ def build_setups(ltf_data: pd.DataFrame, htf_bias: str,
     can produce up to two setups: the first touch ("A") and, if price
     fails to confirm a new BOS before retesting the same zone, a second
     ("A+") setup.
+
+    Two additional optional quality filters (both off by default):
+      - `require_fib_confluence`: only keep a setup if its zone overlaps
+        the 0.618-0.786 Fibonacci confirmation band.
+      - `require_htf_confluence`: only keep a setup if its zone overlaps
+        one of the given `htf_zones` (higher-timeframe supply/demand
+        zones) -- multi-timeframe confluence.
     """
     if htf_bias not in ("bullish", "bearish"):
         return []
@@ -112,6 +122,7 @@ def build_setups(ltf_data: pd.DataFrame, htf_bias: str,
     highs = ltf_data["High"].to_numpy()
     lows = ltf_data["Low"].to_numpy()
     closes = ltf_data["Close"].to_numpy()
+    htf_zones = htf_zones or []
 
     for sweep in aligned_sweeps:
         if session_only and not in_ny_session(sweep.date, session_start_hour, session_end_hour):
@@ -125,6 +136,10 @@ def build_setups(ltf_data: pd.DataFrame, htf_bias: str,
 
         if fresh_zones_only and any(zones_overlap(zone_range, used) for used in used_zones):
             continue
+
+        if require_htf_confluence:
+            if not any(zones_overlap(zone_range, htf_z) for htf_z in htf_zones):
+                continue
 
         search_end = min(zone.end_index + 30, len(ltf_data) - 1)
         entry_low, entry_high = zone.bottom, zone.top
@@ -153,6 +168,12 @@ def build_setups(ltf_data: pd.DataFrame, htf_bias: str,
             continue
         chosen_target, rr = rr_result
 
+        fib_zone_low, fib_zone_high = sorted([fib["0.618"], fib["0.786"]])
+        overlaps_fib = not (entry_high < fib_zone_low or entry_low > fib_zone_high)
+
+        if require_fib_confluence and not overlaps_fib:
+            continue
+
         base_notes = [
             f"Liquidity swept at {sweep.swept_level:.2f} (wick to {sweep.wick_extreme:.2f}), "
             f"aligned with {htf_bias} HTF bias.",
@@ -161,12 +182,12 @@ def build_setups(ltf_data: pd.DataFrame, htf_bias: str,
             f"(structural level, not a Fibonacci extension).",
             f"Risk:Reward = 1:{rr:.2f} -- within the {min_rr:.0f}-{max_rr:.0f} target range.",
         ]
-        fib_zone_low, fib_zone_high = sorted([fib["0.618"], fib["0.786"]])
-        overlaps_fib = not (entry_high < fib_zone_low or entry_low > fib_zone_high)
         if overlaps_fib:
             base_notes.append("Zone overlaps the 0.618-0.786 Fibonacci confirmation band -- confluence.")
         if session_only:
             base_notes.append("Sweep occurred within the configured NY session window.")
+        if require_htf_confluence:
+            base_notes.append("Zone also overlaps a higher-timeframe supply/demand zone -- multi-timeframe confluence.")
 
         # --- First touch (A) ---
         entry_index = None
@@ -248,3 +269,38 @@ def win_rate_by_touch(setups: List[Setup]) -> dict:
         subset = [s for s in setups if s.touch_label == label]
         result[label] = win_rate_stats(subset)
     return result
+
+
+def expectancy_stats(setups: List[Setup]) -> dict:
+    """
+    R-multiple expectancy and profit factor across closed setups -- the
+    fuller picture beyond win rate alone. Each WIN scores +risk_reward R
+    (the target was hit), each LOSS scores -1R (full risk lost, since
+    stop-loss is what defines 1R). A strategy can have a low win rate and
+    still be strongly profitable if the average win is large relative to
+    the average loss (which is exactly what a wide Risk:Reward band like
+    1:3-1:5 is designed to produce).
+    """
+    closed = [s for s in setups if s.outcome in ("WIN", "LOSS")]
+    if not closed:
+        return {"expectancy_r": 0.0, "profit_factor": 0.0, "total_r": 0.0,
+                "avg_win_r": 0.0, "avg_loss_r": -1.0, "closed": 0}
+
+    r_values = [s.risk_reward if s.outcome == "WIN" else -1.0 for s in closed]
+    wins_r = [r for r in r_values if r > 0]
+    losses_r = [r for r in r_values if r < 0]
+
+    total_r = sum(r_values)
+    expectancy = total_r / len(closed)
+    gross_win = sum(wins_r) if wins_r else 0.0
+    gross_loss = abs(sum(losses_r)) if losses_r else 0.0
+    profit_factor = (gross_win / gross_loss) if gross_loss > 0 else (float("inf") if gross_win > 0 else 0.0)
+
+    return {
+        "expectancy_r": expectancy,
+        "profit_factor": profit_factor,
+        "total_r": total_r,
+        "avg_win_r": (sum(wins_r) / len(wins_r)) if wins_r else 0.0,
+        "avg_loss_r": (sum(losses_r) / len(losses_r)) if losses_r else -1.0,
+        "closed": len(closed),
+    }

@@ -1,4 +1,4 @@
-# AI Market Structure Analyzer — XAUUSD & BTCUSD
+# AI Market Structure Analyzer — XAUUSD (Gold)
 
 A multi-timeframe, smart-money-style market structure analyzer built around
 one specific strategy sequence — not a generic indicator dump.
@@ -69,7 +69,7 @@ one specific strategy sequence — not a generic indicator dump.
 
 | File | Purpose |
 |---|---|
-| `data_feed.py` | Fetches XAUUSD (yfinance) and BTCUSD (Binance public API) candles. Falls back to synthetic data offline. |
+| `data_feed.py` | Fetches XAUUSD (Gold) candles via yfinance. Falls back to synthetic data offline. |
 | `image_extractor.py` | Reconstructs OHLC candles from an uploaded chart **screenshot** using color-based detection — no AI/API needed. |
 | `structure.py` | Fractal swing detection + BOS/CHOCH structure labeling. |
 | `liquidity.py` | Liquidity sweep detection. |
@@ -83,7 +83,7 @@ one specific strategy sequence — not a generic indicator dump.
 
 ## Two ways to feed it data
 
-**1. Live Market Data** — fetches real XAUUSD/BTCUSD candles automatically.
+**1. Live Market Data** — fetches real XAUUSD (Gold) candles automatically.
 
 **2. Upload Chart Image** — upload a screenshot of a chart (TradingView, your
 broker, anywhere) instead. You pick the candle colors (or use a preset);
@@ -111,7 +111,7 @@ pip install streamlit yfinance requests pandas numpy matplotlib
 streamlit run app.py
 ```
 
-Pick a symbol (XAUUSD or BTCUSD), an HTF (bias) and LTF (entry) timeframe,
+Pick an HTF (bias) and LTF (entry) timeframe,
 and swing sensitivity, then **Run Analysis**. You'll get:
 - A bias card (current HTF trend)
 - An HTF chart with every BOS/CHOCH label
@@ -128,15 +128,36 @@ and swing sensitivity, then **Run Analysis**. You'll get:
 ## Data history limits (so old levels can actually be found)
 
 Since the strategy can sweep a level of any age, the LTF data needs enough
-history behind it for old swings to even be present:
+history behind it for old swings to even be present. This is capped by
+Yahoo Finance itself, not by this tool: 1m ≈ 7 days, 5m/15m/30m ≈ 60 days,
+1h ≈ 2 years. There's no way around this at fine granularities — it's a
+data-provider limit. If you need months-old levels at LTF precision,
+that's a genuine constraint of the free data source (use a coarser LTF
+like 1h if you need a longer lookback).
 
-- **BTCUSD (Binance)** — paginated automatically to pull thousands of
-  candles (e.g. ~52 days of 15m, ~7 months of 1h) in a few API calls.
-- **XAUUSD (yfinance)** — capped by Yahoo Finance itself, not by this
-  tool: 1m ≈ 7 days, 5m/15m/30m ≈ 60 days, 1h ≈ 2 years. There's no way
-  around this for Gold at fine granularities — it's a data-provider
-  limit. If you need months-old Gold levels at LTF precision, that's a
-  genuine constraint of the free data source.
+## Improving win rate / trade quality
+
+Beyond the core pipeline, four additional levers are available in the sidebar:
+
+- **Require Fibonacci confluence** — only keep setups whose zone overlaps
+  the 0.618-0.786 retracement band (currently just a bonus note; this
+  makes it a hard requirement).
+- **Require HTF zone confluence** — only keep setups whose LTF zone also
+  overlaps a higher-timeframe supply/demand zone (multi-timeframe
+  agreement). Not available in image-upload mode (needs a separate HTF
+  dataset).
+- **Only show A+ setups** — restrict to confirmed second-touch setups,
+  skipping first touches entirely.
+- **Expectancy / Profit Factor** — shown automatically once there are
+  closed trades. Win rate alone can be misleading with a wide 1:3-1:5
+  Risk:Reward band: a strategy can be net profitable even under a 50%
+  win rate if winners are sized several times larger than losers.
+  Expectancy (average R gained/lost per trade) and Profit Factor (gross
+  wins ÷ gross losses) give the fuller picture.
+
+These are all optional and off by default — turning more of them on
+trades quantity for quality; expect fewer total setups but check whether
+they perform better.
 
 ## Notes & limitations
 

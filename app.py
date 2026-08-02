@@ -1,7 +1,7 @@
 """
 app.py
 ------
-AI Market Structure Analyzer — XAUUSD & BTCUSD
+AI Market Structure Analyzer — XAUUSD (Gold)
 Developed by Noor Ahmed Khan.
 
 Strategy pipeline (multi-timeframe smart-money style):
@@ -14,7 +14,7 @@ This tool surfaces trade *ideas* based on the rules above — it does not
 place trades and is not financial advice.
 
 Run locally:
-    pip install streamlit yfinance requests pandas numpy matplotlib
+    pip install streamlit yfinance pandas numpy matplotlib
     streamlit run app.py
 """
 
@@ -24,12 +24,13 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 from datetime import datetime, date, timedelta
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, available_timezones
 
-from data_feed import get_xauusd, get_btcusd
+from data_feed import get_xauusd
 from structure import analyze_structure
-from signal_engine import build_setups, win_rate_stats, win_rate_by_touch
+from signal_engine import build_setups, win_rate_stats, win_rate_by_touch, expectancy_stats
 from liquidity import find_liquidity_sweeps
+from zones import find_zone_after_sweep
 from chart import plot_htf_structure, plot_ltf_setup, plot_winrate_gauge, plot_candles, style_axis
 from image_extractor import extract_candles, COLOR_PRESETS
 
@@ -74,13 +75,38 @@ def format_session_timezones(start_hour: int, end_hour: int) -> str:
 
 # Timezones the user can pick from to enter their own local session hours;
 # these get auto-converted to the equivalent New York (ET) hours internally.
-TZ_OPTIONS = {
-    "Pakistan (GMT+5)": "Asia/Karachi",
-    "UTC (GMT+0)": "UTC",
-    "London, UK": "Europe/London",
-    "Dubai (GMT+4)": "Asia/Dubai",
-    "New York (ET) — no conversion": "America/New_York",
-}
+# Built from the full IANA timezone database (like TradingView's picker),
+# sorted by current UTC offset then city name.
+def _build_tz_options() -> dict:
+    now = datetime.now()
+    entries = []
+    for zone_id in available_timezones():
+        if "/" not in zone_id or zone_id.startswith("Etc/") or "GMT" in zone_id or zone_id == "Factory":
+            continue
+        try:
+            tz = ZoneInfo(zone_id)
+            offset = now.astimezone(tz).utcoffset()
+        except Exception:
+            continue
+        city = zone_id.split("/")[-1].replace("_", " ")
+        entries.append((offset, city, zone_id))
+
+    entries.sort(key=lambda e: (e[0], e[1]))
+
+    options = {}
+    for offset, city, zone_id in entries:
+        total_min = int(offset.total_seconds() // 60)
+        sign = "+" if total_min >= 0 else "-"
+        h, m = divmod(abs(total_min), 60)
+        label = f"(UTC{sign}{h:02d}:{m:02d}) {city}"
+        if label in options:  # avoid duplicate labels for same offset+city across regions
+            label = f"{label} — {zone_id}"
+        options[label] = zone_id
+    return options
+
+
+TZ_OPTIONS = _build_tz_options()
+_DEFAULT_TZ_LABEL = next((lbl for lbl, zid in TZ_OPTIONS.items() if zid == "Asia/Karachi"), list(TZ_OPTIONS.keys())[0])
 
 
 def local_session_to_ny_hours(local_start: int, local_end: int, tz_name: str) -> tuple:
@@ -426,7 +452,7 @@ st.markdown("""
 st.markdown("""
 <div class="hero">
     <h1>AI Market <span class="accent">Structure</span> Analyzer</h1>
-    <p class="sub">Multi-timeframe smart-money analysis for XAUUSD and BTCUSD: HTF structure
+    <p class="sub">Multi-timeframe smart-money analysis for XAUUSD (Gold): HTF structure
     (BOS/CHOCH) sets the bias, then the LTF is scanned for a liquidity sweep, a supply/demand
     zone, and Fibonacci confirmation — the exact sequence of your strategy. This surfaces
     trade ideas for you to evaluate; it does not place trades and is not financial advice.</p>
@@ -442,7 +468,8 @@ with st.sidebar:
     use_image_mode = input_mode == "Upload Chart Image"
 
     st.markdown('<div class="section-label">Market</div>', unsafe_allow_html=True)
-    symbol_label = st.selectbox("Symbol", ["XAUUSD (Gold)", "BTCUSD (Bitcoin)"])
+    symbol_label = "XAUUSD (Gold)"
+    st.caption("Symbol: **XAUUSD (Gold)**")
 
     uploaded_image = None
     bull_color = bear_color = None
@@ -488,15 +515,17 @@ with st.sidebar:
         st.caption("Session filtering needs real timestamps, which a screenshot doesn't have — disabled in this mode.")
         session_only = False
 
-    tz_label = st.selectbox("Your timezone", list(TZ_OPTIONS.keys()), index=0, disabled=not session_only)
+    tz_keys = list(TZ_OPTIONS.keys())
+    tz_label = st.selectbox("Your timezone", tz_keys, index=tz_keys.index(_DEFAULT_TZ_LABEL), disabled=not session_only)
     tz_name = TZ_OPTIONS[tz_label]
+    tz_city = tz_name.split("/")[-1].replace("_", " ")
 
     local_col1, local_col2 = st.columns(2)
     with local_col1:
-        local_start = st.number_input(f"Session start ({tz_label.split(' ')[0]} time)",
+        local_start = st.number_input(f"Session start ({tz_city} time)",
                                        min_value=0, max_value=23, value=17, disabled=not session_only)
     with local_col2:
-        local_end = st.number_input(f"Session end ({tz_label.split(' ')[0]} time)",
+        local_end = st.number_input(f"Session end ({tz_city} time)",
                                      min_value=0, max_value=23, value=2, disabled=not session_only)
 
     if session_only:
@@ -519,6 +548,15 @@ with st.sidebar:
     with rr_col2:
         max_rr = st.number_input("Max R:R", min_value=0.5, max_value=20.0, value=5.0, step=0.5)
 
+    st.markdown('<div class="section-label">Quality Filters (optional)</div>', unsafe_allow_html=True)
+    require_fib = st.checkbox("Require Fibonacci confluence (0.618-0.786)", value=False)
+    require_htf_confluence = st.checkbox("Require HTF zone confluence", value=False,
+                                          disabled=use_image_mode)
+    if use_image_mode:
+        st.caption("HTF confluence needs a separate higher-timeframe dataset — not available in image mode.")
+        require_htf_confluence = False
+    a_plus_only = st.checkbox("Only show A+ setups (skip first touch A)", value=False)
+
     run = st.button(
         "🔍  Extract & Analyze Chart" if use_image_mode else "▶  Run Analysis",
         type="primary", use_container_width=True,
@@ -531,9 +569,7 @@ with st.sidebar:
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=30, show_spinner=False)
 def _get_live_snapshot(symbol_label: str):
-    if symbol_label.startswith("XAUUSD"):
-        return get_xauusd(interval="5m", lookback_days=5)
-    return get_btcusd(interval="5m", limit=200)
+    return get_xauusd(interval="5m", lookback_days=5)
 
 
 live_data = _get_live_snapshot(symbol_label)
@@ -608,7 +644,10 @@ if run:
             setups = build_setups(
                 ltf_data, bias, ltf_left=FRACTAL_STRENGTH, ltf_right=FRACTAL_STRENGTH,
                 session_only=False, fresh_zones_only=fresh_only, min_rr=min_rr, max_rr=max_rr,
+                require_fib_confluence=require_fib,
             )
+            if a_plus_only:
+                setups = [s for s in setups if s.touch_label == "A+"]
             stats = win_rate_stats(setups)
 
         st.markdown('<div class="section-label">Extracted Chart (verify this matches your screenshot)</div>',
@@ -625,20 +664,30 @@ if run:
         ltf_lookback = ltf_lookback_map.get(ltf_label, 30)
 
         with st.spinner("Fetching data and analyzing market structure..."):
-            if symbol_label.startswith("XAUUSD"):
-                htf_data = get_xauusd(interval=htf_label, lookback_days=180)
-                ltf_data = get_xauusd(interval=ltf_label, lookback_days=ltf_lookback)
-            else:
-                htf_data = get_btcusd(interval=htf_label, limit=500)
-                ltf_data = get_btcusd(interval=ltf_label, limit=5000)
+            htf_data = get_xauusd(interval=htf_label, lookback_days=180)
+            ltf_data = get_xauusd(interval=ltf_label, lookback_days=ltf_lookback)
 
             htf_swings, htf_events, bias = analyze_structure(
                 htf_data, left=FRACTAL_STRENGTH, right=FRACTAL_STRENGTH)
+
+            htf_zones_list = []
+            if require_htf_confluence:
+                htf_sweeps = find_liquidity_sweeps(htf_data, htf_swings)
+                htf_aligned = [s for s in htf_sweeps if s.direction == bias]
+                for s in htf_aligned:
+                    z = find_zone_after_sweep(htf_data, s)
+                    if z:
+                        htf_zones_list.append((z.bottom, z.top))
+
             setups = build_setups(
                 ltf_data, bias, ltf_left=FRACTAL_STRENGTH, ltf_right=FRACTAL_STRENGTH,
                 session_only=session_only, session_start_hour=int(session_start), session_end_hour=int(session_end),
                 fresh_zones_only=fresh_only, min_rr=min_rr, max_rr=max_rr,
+                require_fib_confluence=require_fib,
+                require_htf_confluence=require_htf_confluence, htf_zones=htf_zones_list,
             )
+            if a_plus_only:
+                setups = [s for s in setups if s.touch_label == "A+"]
             stats = win_rate_stats(setups)
 
     # --- Shared diagnostics (both modes): how much raw material did we
@@ -734,6 +783,23 @@ if run:
     if stats['closed'] < 10:
         st.warning(f"Only {stats['closed']} closed setup(s) in this window — too small a sample to judge win rate. "
                    "Widen the LTF history (more bars / longer period) for a meaningful sample size.")
+
+    exp_stats = expectancy_stats(setups)
+    if exp_stats["closed"] > 0:
+        exp_class = "pos" if exp_stats["expectancy_r"] > 0 else "neg"
+        pf_display = f"{exp_stats['profit_factor']:.2f}" if exp_stats["profit_factor"] != float("inf") else "∞"
+        st.markdown(f"""
+        <div class="stat-row">
+            <div class="stat-card {exp_class}"><div class="num">{exp_stats['expectancy_r']:+.2f}R</div><div class="lbl">Expectancy / Trade</div></div>
+            <div class="stat-card gold"><div class="num">{pf_display}</div><div class="lbl">Profit Factor</div></div>
+            <div class="stat-card pos"><div class="num">{exp_stats['avg_win_r']:.2f}R</div><div class="lbl">Avg Win</div></div>
+            <div class="stat-card neg"><div class="num">{exp_stats['avg_loss_r']:.2f}R</div><div class="lbl">Avg Loss</div></div>
+        </div>
+        """, unsafe_allow_html=True)
+        st.caption("Expectancy = average R gained/lost per trade (1R = the amount risked on the stop-loss). "
+                   "Positive expectancy can still happen with a win rate under 50% when winners are "
+                   "sized much larger than losers — which is exactly what a 1:3–1:5 R:R band aims for. "
+                   "Profit Factor = gross winnings ÷ gross losses; above 1.0 means net profitable.")
 
     touch_stats = win_rate_by_touch(setups)
     a_stats, a_plus_stats = touch_stats["A"], touch_stats["A+"]
