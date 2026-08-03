@@ -41,37 +41,6 @@ st.set_page_config(page_title="AI Market Structure Analyzer — by Noor Ahmed Kh
 # 2 bars left/right is a standard, reliable setting for this strategy.
 FRACTAL_STRENGTH = 2
 
-# Reference timezones shown alongside the NY session hours, so it's clear
-# what time that session actually falls at around the world.
-_TZ_REFERENCE = [
-    ("Pakistan (PKT)", "Asia/Karachi"),
-    ("UTC", "UTC"),
-    ("London (UK)", "Europe/London"),
-    ("Dubai (UAE)", "Asia/Dubai"),
-]
-
-
-def format_session_timezones(start_hour: int, end_hour: int) -> str:
-    """Build an HTML snippet showing the NY session window converted into
-    a few other timezones, so it's clear what local time that is."""
-    today = date.today()
-    ny_tz = ZoneInfo("America/New_York")
-    start_dt = datetime(today.year, today.month, today.day, start_hour % 24, 0, tzinfo=ny_tz)
-    end_dt = datetime(today.year, today.month, today.day, 0, 0, tzinfo=ny_tz) + timedelta(hours=end_hour)
-
-    rows = []
-    for label, tzname in _TZ_REFERENCE:
-        tz = ZoneInfo(tzname)
-        s_local = start_dt.astimezone(tz)
-        e_local = end_dt.astimezone(tz)
-        day_note = " (+1 day)" if e_local.date() > s_local.date() else ""
-        rows.append(
-            f'<div class="tz-row"><span class="tz-name">{label}</span>'
-            f'<span class="tz-time">{s_local.strftime("%I:%M %p").lstrip("0")} '
-            f'– {e_local.strftime("%I:%M %p").lstrip("0")}{day_note}</span></div>'
-        )
-    return "".join(rows)
-
 
 # Timezones the user can pick from to enter their own local session hours;
 # these get auto-converted to the equivalent New York (ET) hours internally.
@@ -131,6 +100,29 @@ def local_session_to_ny_hours(local_start: int, local_end: int, tz_name: str) ->
     ny_start_hour = ny_start_dt.hour
     ny_end_hour = ny_end_dt.hour if ny_end_dt.hour != 0 else 24
     return ny_start_hour, ny_end_hour
+
+
+def ny_hours_to_local(ny_start: int, ny_end: int, tz_name: str) -> tuple:
+    """
+    Inverse of local_session_to_ny_hours: given a session window in New
+    York (ET) time, returns the equivalent local hours in `tz_name` for
+    TODAY's date -- so the result automatically reflects whichever side
+    of DST both New York and the local zone currently sit on.
+    """
+    today = date.today()
+    ny_tz = ZoneInfo("America/New_York")
+    local_tz = ZoneInfo(tz_name)
+
+    start_dt = datetime(today.year, today.month, today.day, ny_start % 24, 0, tzinfo=ny_tz)
+    end_hour_adjusted = ny_end if ny_end > ny_start else ny_end + 24
+    end_dt = datetime(today.year, today.month, today.day, 0, 0, tzinfo=ny_tz) + timedelta(hours=end_hour_adjusted)
+
+    local_start_dt = start_dt.astimezone(local_tz)
+    local_end_dt = local_start_dt + (end_dt - start_dt)
+
+    local_start_hour = local_start_dt.hour
+    local_end_hour = local_end_dt.hour if local_end_dt.date() == local_start_dt.date() else local_end_dt.hour
+    return local_start_hour, local_end_hour
 
 # ---------------------------------------------------------------------------
 # Theme: "smart money" — deep indigo/near-black, violet accent (institutional
@@ -310,17 +302,6 @@ st.markdown("""
 
 [data-testid="stSidebar"] { background: var(--surface); border-right: 1px solid var(--border); }
 [data-testid="stSidebar"] .section-label { color: var(--violet); }
-
-.tz-panel {
-    background: var(--surface2); border: 1px solid var(--border); border-radius: 8px;
-    padding: 8px 12px; margin: 4px 0 12px 0;
-}
-.tz-row {
-    display: flex; justify-content: space-between; align-items: center;
-    font-family: 'Fira Code', monospace; font-size: 11px; padding: 3px 0;
-}
-.tz-name { color: var(--muted); }
-.tz-time { color: var(--violet); font-weight: 500; }
 
 .live-price-card {
     background: linear-gradient(160deg, rgba(27,24,48,0.85), rgba(20,18,31,0.9));
@@ -520,25 +501,24 @@ with st.sidebar:
     tz_name = TZ_OPTIONS[tz_label]
     tz_city = tz_name.split("/")[-1].replace("_", " ")
 
+    # Default session = NY 8:00 AM - 12:00 PM (ET), auto-converted into
+    # whichever local hours that currently is for the selected timezone --
+    # this naturally shifts with DST (e.g. Karachi: 5-9 PM in summer,
+    # 6-10 PM in winter) without any hardcoded seasonal logic.
+    default_local_start, default_local_end = ny_hours_to_local(8, 12, tz_name)
+
     local_col1, local_col2 = st.columns(2)
     with local_col1:
         local_start = st.number_input(f"Session start ({tz_city} time)",
-                                       min_value=0, max_value=23, value=17, disabled=not session_only)
+                                       min_value=0, max_value=23, value=default_local_start, disabled=not session_only)
     with local_col2:
         local_end = st.number_input(f"Session end ({tz_city} time)",
-                                     min_value=0, max_value=23, value=2, disabled=not session_only)
+                                     min_value=0, max_value=23, value=default_local_end, disabled=not session_only)
 
     if session_only:
         session_start, session_end = local_session_to_ny_hours(int(local_start), int(local_end), tz_name)
-        st.markdown(
-            f'<div class="tz-panel"><div class="tz-row">'
-            f'<span class="tz-name">= NY session (ET)</span>'
-            f'<span class="tz-time">{session_start:02d}:00 – {session_end:02d}:00</span>'
-            f'</div>{format_session_timezones(session_start, session_end)}</div>',
-            unsafe_allow_html=True,
-        )
     else:
-        session_start, session_end = 8, 17
+        session_start, session_end = 8, 12
 
     fresh_only = st.checkbox("Fresh (untested) zones only", value=True)
 

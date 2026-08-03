@@ -42,8 +42,13 @@ one specific strategy sequence — not a generic indicator dump.
 
 6. **Execution filters** — only setups meeting all of these are kept:
    - **Session** — the **sweep event itself** must occur within the
-     configured NY session window (default 08:00–17:00 America/New_York,
-     DST-aware). The level being swept can be any age — a swing from
+     configured NY session window (default 08:00–12:00 America/New_York,
+     DST-aware). The session inputs are entered in **your own local
+     timezone** (searchable dropdown of world cities) and converted
+     automatically — the default local hours shown will shift with
+     Daylight Saving Time on their own (e.g. Karachi: 5–9 PM in summer,
+     6–10 PM in winter), since both New York's and your own zone's DST
+     changes are accounted for using today's date. The level being swept can be any age — a swing from
      months ago counts just as much as one from yesterday; only the
      timing of the sweep candle matters, never the age of the level.
    - **Fresh zone** — the supply/demand zone must not already have been
