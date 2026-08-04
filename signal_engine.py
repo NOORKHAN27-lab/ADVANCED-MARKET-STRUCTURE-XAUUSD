@@ -43,7 +43,7 @@ import pandas as pd
 from structure import analyze_structure, find_target_level, find_target_candidates
 from liquidity import LiquiditySweep, find_liquidity_sweeps
 from zones import Zone, find_zone_after_sweep, compute_fibonacci
-from filters import in_ny_session, zones_overlap, select_target_by_rr
+from filters import in_ny_session, zones_overlap, select_target_by_rr, find_valid_retracement_entry
 from backtest import simulate_outcome
 
 
@@ -63,24 +63,6 @@ class Setup:
     outcome: str = "OPEN"      # "WIN" | "LOSS" | "OPEN"
     exit_price: Optional[float] = None
     bars_held: Optional[int] = None
-
-
-def _find_next_touch(closes, entry_zone: tuple, after_index: int, max_lookahead: int = 150) -> Optional[int]:
-    """
-    First index after `after_index` where price closes back inside
-    `entry_zone`, requiring it to have LEFT the zone at least once in
-    between (so this is a genuine second visit, not the same touch).
-    """
-    low, high = entry_zone
-    left_zone = False
-    end = min(after_index + max_lookahead, len(closes))
-    for i in range(after_index + 1, end):
-        inside = low <= closes[i] <= high
-        if not inside:
-            left_zone = True
-        elif inside and left_zone:
-            return i
-    return None
 
 
 def build_setups(ltf_data: pd.DataFrame, htf_bias: str,
@@ -189,13 +171,17 @@ def build_setups(ltf_data: pd.DataFrame, htf_bias: str,
         if require_htf_confluence:
             base_notes.append("Zone also overlaps a higher-timeframe supply/demand zone -- multi-timeframe confluence.")
 
-        # --- First touch (A) ---
-        entry_index = None
-        for i in range(zone.end_index, min(zone.end_index + 60, len(ltf_data))):
-            if entry_low <= closes[i] <= entry_high:
-                entry_index = i
-                break
+        # --- First touch (A): require a genuine, progressive pullback into
+        # the zone -- at least 2 consecutive counter-trend candles, each
+        # closing further than the last -- not just any single touch. ---
+        entry_index = find_valid_retracement_entry(ltf_data, (entry_low, entry_high),
+                                                     start_index=zone.end_index, direction=direction)
         confirmed = entry_index is not None
+        if confirmed:
+            base_notes.append(
+                f"Valid {'red' if direction == 'BUY' else 'green'}-candle retracement into the zone "
+                "(2+ consecutive candles, each closing further) -- not just a wick touch."
+            )
 
         setup_a = Setup(
             direction=direction, sweep=sweep, zone=zone, fib_levels=fib,
@@ -212,9 +198,22 @@ def build_setups(ltf_data: pd.DataFrame, htf_bias: str,
         setups.append(setup_a)
 
         # --- Second touch (A+) -- only if price left the zone, failed to confirm a
-        # new BOS in this trade's direction, and came back to the SAME zone again ---
+        # new BOS in this trade's direction, and comes back with another valid
+        # progressive retracement into the SAME zone ---
         if confirmed:
-            second_index = _find_next_touch(closes, (entry_low, entry_high), entry_index)
+            left_index = None
+            for i in range(entry_index + 1, min(entry_index + 150, len(closes))):
+                if not (entry_low <= closes[i] <= entry_high):
+                    left_index = i
+                    break
+
+            second_index = None
+            if left_index is not None:
+                second_index = find_valid_retracement_entry(
+                    ltf_data, (entry_low, entry_high), start_index=left_index,
+                    direction=direction, max_lookahead=150,
+                )
+
             if second_index is not None:
                 bos_label = "BOS_bull" if direction == "BUY" else "BOS_bear"
                 bos_between = any(
@@ -224,7 +223,8 @@ def build_setups(ltf_data: pd.DataFrame, htf_bias: str,
                 if not bos_between:
                     a_plus_notes = list(base_notes) + [
                         "Second touch of the same zone (A+) -- price left the zone but did NOT "
-                        "confirm a new BOS in this direction before returning, per your rule."
+                        "confirm a new BOS in this direction, then gave another valid progressive "
+                        "retracement back into the same zone.",
                     ]
                     setup_a_plus = Setup(
                         direction=direction, sweep=sweep, zone=zone, fib_levels=fib,

@@ -61,3 +61,48 @@ def select_target_by_rr(entry_zone: Tuple[float, float], stop_loss: float,
     # prefer the closer/lower-RR qualifying target (more conservative, more likely to hit)
     qualifying.sort(key=lambda x: x[1])
     return qualifying[0]
+
+
+def find_valid_retracement_entry(data: pd.DataFrame, entry_zone: Tuple[float, float],
+                                  start_index: int, direction: Literal["BUY", "SELL"],
+                                  max_lookahead: int = 60) -> Optional[int]:
+    """
+    Scans forward from `start_index` for a genuine, progressive pullback
+    into `entry_zone`:
+      - BUY: the retracement must be made of RED (bearish) candles --
+        at least 2 consecutive -- where each new red candle's close
+        extends further down than the previous one (real follow-through,
+        not chop).
+      - SELL: mirror image -- GREEN (bullish) candles, at least 2
+        consecutive, each closing further up than the previous one.
+
+    Returns the index of the candle where this valid run's close lands
+    inside `entry_zone` (the actual entry bar), or None if no such
+    pattern is found within `max_lookahead` bars.
+    """
+    low, high = entry_zone
+    opens = data["Open"].to_numpy()
+    closes = data["Close"].to_numpy()
+    end = min(start_index + max_lookahead, len(data))
+
+    run_length = 0
+    prev_close = None
+
+    for i in range(start_index, end):
+        is_counter_candle = (closes[i] < opens[i]) if direction == "BUY" else (closes[i] > opens[i])
+
+        if is_counter_candle:
+            if run_length == 0:
+                run_length = 1
+            else:
+                extends = (closes[i] < prev_close) if direction == "BUY" else (closes[i] > prev_close)
+                run_length = run_length + 1 if extends else 1
+            prev_close = closes[i]
+
+            if run_length >= 2 and low <= closes[i] <= high:
+                return i
+        else:
+            run_length = 0
+            prev_close = None
+
+    return None

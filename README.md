@@ -35,6 +35,12 @@ one specific strategy sequence — not a generic indicator dump.
    0.618–0.786 band is checked for overlap with the supply/demand zone
    (confluence). **Targets are not Fibonacci-based** — see the next point.
 
+4b. **Valid retracement entry** — the pullback that returns price into
+   the zone must be a genuine, progressive move: at least 2 consecutive
+   counter-trend candles (red for a BUY zone, green for a SELL zone),
+   each one closing further than the last. A single wick touch or a
+   choppy, overlapping pullback does NOT count as a confirmed entry.
+
 5. **Target = next structural swing level** — the target is chosen from
    ALL still-unbroken swing highs (for a BUY) or swing lows (for a SELL)
    ahead of price — not just the single nearest one — picking whichever
